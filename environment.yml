@@ -1,7 +1,9 @@
 name: variant_classifier
+
 channels:
   - conda-forge
   - bioconda
-dependencies: 
-  - python==3.12.8
+
+dependencies:
+  - python=3.12.8
   - pip

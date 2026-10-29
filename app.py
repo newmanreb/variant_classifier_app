@@ -30,11 +30,14 @@ app.config['TEMPLATES_AUTO_RELOAD'] = True
 ### DEFINE MODEL AND FEATURES 
 #############################################################################
 
-# Load both pipeline models securely into a registry
-# I have selected the original random forest model and the optimised random forest model 
+# Load the trained models into a registry.
+# Each key identifies a model and maps to its loaded object.
 MODELS = {
     'rf_model': pk.load(open('models/rf_model.sav', 'rb')),
-    'optimised_random_forest': joblib.load('models/optimised_random_forest.joblib')
+    'optimised_random_forest': joblib.load(
+        'models/optimised_random_forest.joblib'
+    ),
+    'dt_model': pk.load(open('models/dt_model.sav', 'rb'))
 }
 
 # Categorical features in exact training order
@@ -401,6 +404,38 @@ def get_pathogenic_probability(model, features):
     pathogenic_index = classes.index(1)
     return float(probabilities[pathogenic_index] * 100)
 
+def compare_models(features):
+    """
+    Run all registered models on the same variant features
+    and return their predicted classes and pathogenic probabilities.
+    """
+    comparison_results = []
+
+    for model_name, model in MODELS.items():
+        # Get the predicted class (0 = benign, 1 = pathogenic)
+        predicted_class = model.predict(features)[0]
+
+        # Get the predicted probability of the pathogenic class
+        pathogenic_probability = get_pathogenic_probability(
+            model,
+            features
+        )
+
+        # Convert the numeric class into a readable label
+        prediction_label = (
+            "Pathogenic" if predicted_class == 1 else "Benign"
+        )
+
+        # Store this model's results
+        comparison_results.append({
+            "model_name": model_name,
+            "predicted_class": int(predicted_class),
+            "prediction_label": prediction_label,
+            "pathogenic_probability": pathogenic_probability
+        })
+
+    return comparison_results
+
 #############################################################################
 ### FLASK APP 
 #############################################################################
@@ -454,6 +489,9 @@ def predict():
     the selected model, formats and validates the submitted features,
     and calculates the probability that the variant is pathogenic.
 
+    Comparison mode compares results of all available models, and 
+    standard mode predicts for the selected model. 
+
     The prediction result or any error message is passed to the
     index.html template for display. The selected model is also
     passed to the template so that the user's model choice is retained.
@@ -478,12 +516,24 @@ def predict():
     )
 
     try:
+        # Prepare the variant features once for all predictions
+        final_features = format_features(request.form)
+
+        # Comparison mode: run every model
+        if selected_model_key == 'compare_all':
+            comparison_results = compare_models(final_features)
+
+            return render_template(
+                'index.html',
+                comparison_results=comparison_results,
+                selected_model=selected_model_key
+            )
+
+        # Standard mode: run only the selected model
         chosen_model = MODELS.get(selected_model_key)
 
         if chosen_model is None:
             raise ValueError("Please select a valid prediction model.")
-
-        final_features = format_features(request.form)
 
         prob_pathogenic = get_pathogenic_probability(
             chosen_model,
@@ -565,6 +615,20 @@ def predict_batch():
         'model_choice', 'rf_model'
     )
 
+    if selected_model_key == 'compare_all':
+        batch_models = MODELS
+    else:
+        batch_model = MODELS.get(selected_model_key)
+
+        if batch_model is None:
+            raise ValueError(
+                "Please select a valid prediction model."
+            )
+
+        batch_models = {
+            selected_model_key: batch_model
+        }
+
     if 'file' not in request.files or request.files['file'].filename == '':
         return render_template(
             'index.html',
@@ -573,11 +637,6 @@ def predict_batch():
         )
 
     try:
-        batch_model = MODELS.get(selected_model_key)
-
-        if batch_model is None:
-            raise ValueError("Please select a valid prediction model.")
-
         df = pd.read_csv(request.files['file'])
 
         if df.empty:
@@ -643,6 +702,12 @@ def predict_batch():
         results_col = [None] * len(df)
         valid_positions = []
         feature_rows = []
+
+        # Store predictions separately for each selected model.
+        model_results = {
+            model_name: [None] * len(df)
+            for model_name in batch_models
+        }
 
         # Validate each row and build its features.
         for position, (_, row) in enumerate(df.iterrows()):
@@ -712,8 +777,8 @@ def predict_batch():
             except (TypeError, ValueError) as error:
                 results_col[position] = f"Invalid row: {error}"
 
-        # Predict all valid rows together.
-        raw_probabilities = []
+        # Predict all valid rows with each selected model.
+        raw_probabilities_by_model = {}
 
         if valid_positions:
             final_features_df = pd.DataFrame(
@@ -721,45 +786,87 @@ def predict_batch():
                 columns=all_feature_names
             )
 
-            probabilities = batch_model.predict_proba(final_features_df)
-            classes = list(batch_model.classes_)
+            for model_name, model in batch_models.items():
+                # Predict the class and pathogenic probability for each row.
+                predicted_classes = model.predict(final_features_df)
+                probabilities = model.predict_proba(final_features_df)
+                classes = list(model.classes_)
 
-            if 1 not in classes:
-                raise ValueError(
-                    "The selected model does not contain pathogenic class 1."
-                )
+                if 1 not in classes:
+                    raise ValueError(
+                        f"Model '{model_name}' does not contain "
+                        "pathogenic class 1."
+                    )
 
-            pathogenic_index = classes.index(1)
-            probs_pct = probabilities[:, pathogenic_index] * 100
+                pathogenic_index = classes.index(1)
+                probs_pct = probabilities[:, pathogenic_index] * 100
 
-            raw_probabilities = probs_pct.tolist()
+                raw_probabilities_by_model[model_name] = probs_pct.tolist()
 
-            for position, probability in zip(valid_positions, probs_pct):
-                results_col[position] = f"{probability:.2f}%"
+                # Match each prediction back to its original CSV row.
+                for position, predicted_class, probability in zip(
+                    valid_positions, predicted_classes, probs_pct
+                ):
+                    prediction_label = (
+                        "Pathogenic" if predicted_class == 1 else "Benign"
+                    )
 
-        # Probability distribution chart.
+                    model_results[model_name][position] = {
+                        "prediction_label": prediction_label,
+                        "pathogenic_probability": float(probability)
+                    }
+
+                # Preserve the existing probability field for compatibility.
+                if model_name == selected_model_key:
+                    for position, probability in zip(
+                        valid_positions, probs_pct
+                    ):
+                        results_col[position] = f"{probability:.2f}%"
+
+            # In comparison mode, use the first model's probabilities
+            # for the legacy probability field.
+            if selected_model_key == 'compare_all' and batch_models:
+                first_model_name = next(iter(batch_models))
+
+                for position, probability in zip(
+                    valid_positions,
+                    raw_probabilities_by_model[first_model_name]
+                ):
+                    results_col[position] = f"{probability:.2f}%"
+
+        # Build a probability distribution for each selected model.
         bins = [0, 20, 40, 60, 80, 100.01]
         bin_labels = [
             '0-20%', '20-40%', '40-60%', '60-80%', '80-100%'
         ]
 
-        distribution_counts = [0] * len(bin_labels)
+        chart_datasets = []
 
-        if raw_probabilities:
-            categorized = pd.cut(
-                raw_probabilities,
-                bins=bins,
-                labels=bin_labels,
-                right=False
-            )
-            counts = categorized.value_counts().reindex(
-                bin_labels, fill_value=0
-            )
-            distribution_counts = counts.astype(int).tolist()
+        for model_name, probabilities in raw_probabilities_by_model.items():
+            distribution_counts = [0] * len(bin_labels)
+
+            if probabilities:
+                categorized = pd.cut(
+                    probabilities,
+                    bins=bins,
+                    labels=bin_labels,
+                    right=False
+                )
+
+                counts = categorized.value_counts().reindex(
+                    bin_labels, fill_value=0
+                )
+
+                distribution_counts = counts.astype(int).tolist()
+
+            chart_datasets.append({
+                'label': model_name,
+                'counts': distribution_counts
+            })
 
         chart_data = {
             'labels': bin_labels,
-            'counts': distribution_counts,
+            'datasets': chart_datasets,
             'valid_count': len(valid_positions),
             'invalid_count': len(df) - len(valid_positions)
         }
@@ -779,6 +886,13 @@ def predict_batch():
         ]
 
         formatted_results = df[output_cols].to_dict(orient='records')
+
+        # Attach each model's result to its corresponding CSV row.
+        for position, output_row in enumerate(formatted_results):
+            output_row['model_results'] = {
+                model_name: model_results[model_name][position]
+                for model_name in batch_models
+            }
 
         return render_template(
             'index.html',
