@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>ML Deployment Pipeline</title>
+    <!-- Chart.js CDN for batch visualizations -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 40px;
+            background-color: #f4f7f6;
+            color: #333;
+        }
+
+        .container {
+            display: flex;
+            gap: 40px;
+            align-items: flex-start;
+        }
+
+        .form-section {
+            flex: 1;
+            min-width: 0;
+            background: white;
+            padding: 25px;
+            border-radius: 8px;
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.05);
+        }
+
+        .result-box {
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 5px;
+            font-weight: bold;
+            background-color: #e2e3e5;
+            overflow-wrap: anywhere;
+        }
+
+        label {
+            font-weight: bold;
+            display: block;
+            margin-top: 15px;
+        }
+
+        input, select {
+            width: 100%;
+            padding: 8px;
+            margin-top: 5px;
+            box-sizing: border-box;
+        }
+
+        input[type="submit"] {
+            background-color: #28a745;
+            color: white;
+            border: none;
+            font-size: 14px;
+            cursor: pointer;
+            margin-top: 20px;
+            border-radius: 4px;
+            padding: 10px;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+        }
+
+        th, td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            font-size: 13px;
+            text-align: left;
+            overflow-wrap: anywhere;
+        }
+
+        th {
+            background-color: #007bff;
+            color: white;
+        }
+
+        .text-error {
+            color: #dc3545;
+            font-weight: bold;
+        }
+
+        .chart-wrapper {
+            margin-top: 25px;
+            background: #fff;
+            padding: 15px;
+            border-radius: 6px;
+            border: 1px solid #e0e0e0;
+        }
+
+        .stats-summary {
+            display: flex;
+            justify-content: space-around;
+            gap: 12px;
+            flex-wrap: wrap;
+            margin-top: 10px;
+            font-weight: bold;
+        }
+
+        .table-wrapper {
+            overflow-x: auto;
+        }
+
+        code {
+            overflow-wrap: anywhere;
+        }
+
+        @media (max-width: 900px) {
+            body {
+                margin: 16px;
+            }
+
+            .container {
+                flex-direction: column;
+            }
+
+            .form-section {
+                width: 100%;
+                box-sizing: border-box;
+            }
+        }
+    </style>
+</head>
+<body>
+    <h1>Dynamic Pipeline Prediction Dashboard</h1>
+
+    <div class="container">
+        <!-- 1. Single Instance Entry -->
+        <div class="form-section">
+            <h2>1. Single Instance Entry</h2>
+
+            <form action="/predict" method="post">
+                <label for="model_choice">Select Prediction Model:</label>
+                <select name="model_choice" id="model_choice">
+                    {% for m in available_models %}
+                        <option value="{{ m }}" {% if selected_model == m %}selected{% endif %}>{{ m }}</option>
+                    {% endfor %}
+                </select>
+
+                <label for="mc_variant">Select MC Variant:</label>
+                <select name="mc_variant" id="mc_variant" required>
+                    {% for variant in mc_variants %}
+                        <option value="{{ variant }}">{{ variant }}</option>
+                    {% endfor %}
+                </select>
+
+                <label for="gene_length">Gene Length:</label>
+                <input type="number" step="any" min="0.000001" max="2500000"
+                       name="gene_length" id="gene_length" required>
+
+                <label for="pli_score">pLI Score:</label>
+                <input type="number" step="any" min="0" max="1"
+                       name="pli_score" id="pli_score" required>
+
+                <label for="rs_present">RS Present:</label>
+                <select name="rs_present" id="rs_present" required>
+                    <option value="0">0 (absent)</option>
+                    <option value="1">1 (present)</option>
+                </select>
+
+                <label for="allele_frequency">Allele Frequency (optional):</label>
+                <input type="number" step="any" min="0" max="1"
+                       name="allele_frequency" id="allele_frequency"
+                       placeholder="Leave blank if unknown">
+
+                <label for="variant_type">Variant Type:</label>
+                <select name="variant_type" id="variant_type" required>
+                    <option value="Complex">Complex</option>
+                    <option value="Deletion">Deletion</option>
+                    <option value="Insertion">Insertion</option>
+                    <option value="SNV">SNV</option>
+                    <option value="Unknown" selected>Unknown</option>
+                </select>
+
+                <input type="submit" value="Execute Single Pipeline Run">
+            </form>
+
+            {% if result %}
+                <div class="result-box">{{ result }}</div>
+            {% endif %}
+        </div>
+
+        <!-- 2. Batch CSV Processing Panel -->
+        <div class="form-section">
+            <h2>2. Batch CSV Processing</h2>
+
+            <form action="/predict_batch" method="post" enctype="multipart/form-data">
+                <label for="batch_model_choice">Select Prediction Model:</label>
+                <select name="model_choice" id="batch_model_choice">
+                    {% for m in available_models %}
+                        <option value="{{ m }}" {% if selected_model == m %}selected{% endif %}>{{ m }}</option>
+                    {% endfor %}
+                </select>
+
+                <label for="file">Upload Evaluation CSV File:</label>
+
+                <p style="font-weight: bold; margin-bottom: 5px; font-size: 13px; color: #555;">
+                    CSV example (column names are case-insensitive):
+                </p>
+                <p style="font-size: 13px; color: #555;">
+                    Required columns: <code>Gene_Length</code>, <code>pLI_Score</code>,
+                    <code>RS_Present</code>, and <code>mc_variant</code>.
+                    <code>Allele_Frequency</code> and <code>Type</code> are optional.
+                </p>
+                <p style="font-size: 13px; color: #555;">
+                    Missing Gene Length values are imputed using the batch median.
+                    Blank allele frequency is treated as unavailable (AF_MAX = 0,
+                    AF_Missing = 1). Blank Type is treated as Unknown.
+                </p>
+
+                <div class="table-wrapper">
+                    <table style="margin-top: 5px; margin-bottom: 20px; font-size: 12px;">
+                        <thead>
+                            <tr>
+                                <th style="background-color: #6c757d;">Gene_Length</th>
+                                <th style="background-color: #6c757d;">pLI_Score</th>
+                                <th style="background-color: #6c757d;">RS_Present</th>
+                                <th style="background-color: #6c757d;">mc_variant</th>
+                                <th style="background-color: #6c757d;">Allele_Frequency</th>
+                                <th style="background-color: #6c757d;">Type</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>1500</td>
+                                <td>0.9</td>
+                                <td>1</td>
+                                <td><code>MC_missense_variant</code></td>
+                                <td>0.002</td>
+                                <td>SNV</td>
+                            </tr>
+                            <tr>
+                                <td>200</td>
+                                <td>0.1</td>
+                                <td>0</td>
+                                <td><code>MC_synonymous_variant</code></td>
+                                <td>0</td>
+                                <td>Deletion</td>
+                            </tr>
+                            <tr>
+                                <td>8500</td>
+                                <td>0.99</td>
+                                <td>1</td>
+                                <td><code>MC_frameshift_variant</code></td>
+                                <td></td>
+                                <td></td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <input type="file" name="file" id="file" accept=".csv,text/csv" required>
+                <input style="background-color: #007bff;" type="submit" value="Process Batch CSV">
+            </form>
+
+            {% if batch_error %}
+                <div class="result-box text-error">{{ batch_error }}</div>
+            {% endif %}
+
+            {% if chart_data %}
+                <div class="chart-wrapper">
+                    <h3>Batch Analysis Summary</h3>
+                    <div class="stats-summary" id="stats-summary"></div>
+                    <canvas id="distributionChart" height="180"></canvas>
+                </div>
+            {% endif %}
+
+            {% if batch_results %}
+                <h3>Batch Calculations Output</h3>
+                <div class="table-wrapper">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>MC Variant</th>
+                                <th>Gene Length</th>
+                                <th>pLI Score</th>
+                                <th>RS Present</th>
+                                <th>Allele Frequency</th>
+                                <th>Type</th>
+                                <th>Pathogenic Probability</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for row in batch_results %}
+                            <tr>
+                                <td><small>{{ row.get('mc_variant', '') }}</small></td>
+                                <td><strong>{{ row.get('Gene_Length', 'N/A') }}</strong></td>
+                                <td><strong>{{ row.get('pLI_Score', 'N/A') }}</strong></td>
+                                <td><strong>{{ row.get('RS_Present', 'N/A') }}</strong></td>
+                                <td>{{ row.get('Allele_Frequency', '') }}</td>
+                                <td>{{ row.get('Type', 'Unknown') }}</td>
+                                <td>
+                                    {% if 'Invalid row:' in row.get('Pathogenic_Probability_Pct', '') %}
+                                        <span class="text-error">{{ row.get('Pathogenic_Probability_Pct') }}</span>
+                                    {% else %}
+                                        <strong>{{ row.get('Pathogenic_Probability_Pct') }}</strong>
+                                    {% endif %}
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            {% endif %}
+        </div>
+    </div>
+
+    {% if chart_data %}
+    <script>
+        const chartPayload = JSON.parse('{{ chart_data | safe }}');
+
+        const statsSummary = document.getElementById('stats-summary');
+        statsSummary.innerHTML = `
+            <span style="color: #28a745;">Valid Records: ${chartPayload.valid_count}</span>
+            <span style="color: #dc3545;">Invalid Records: ${chartPayload.invalid_count}</span>
+        `;
+
+        const ctx = document.getElementById('distributionChart').getContext('2d');
+        new Chart(ctx, {
+            type: 'bar',
+            data: {
+                labels: chartPayload.labels,
+                datasets: [{
+                    label: 'Predicted Pathogenic Probability Distribution',
+                    data: chartPayload.counts,
+                    backgroundColor: 'rgba(0, 123, 255, 0.6)',
+                    borderColor: 'rgba(0, 123, 255, 1)',
+                    borderWidth: 1
+                }]
+            },
+            options: {
+                responsive: true,
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        ticks: { precision: 0 },
+                        title: { display: true, text: 'Number of Variants' }
+                    },
+                    x: {
+                        title: { display: true, text: 'Pathogenic Probability Range' }
+                    }
+                }
+            }
+        });
+    </script>
+    {% endif %}
+</body>
+</html>
