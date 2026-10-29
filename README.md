@@ -1,6 +1,6 @@
 # Variant Classifier
 
-A Flask web application that uses trained machine-learning models to predict the pathogenic probability of genetic variants. Supports single-variant predictions and batch predictions from CSV files.
+A Flask web application that uses trained machine-learning models to predict the pathogenic probability of genetic variants. Supports single-variant predictions and batch predictions from CSV files. Predict based on a model of choice or use comparison mode to compare predictions from 3 models. 
 
 ## Installation
 
